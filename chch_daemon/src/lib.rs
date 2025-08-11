@@ -7,7 +7,9 @@ use std::{
     },
     path::{Path, PathBuf},
     str::FromStr,
+    time::Duration,
 };
+use tokio::{select, sync::mpsc::UnboundedReceiver, task::spawn_blocking, time::Instant};
 
 pub fn start_daemon_server() {
     // IDK why forking twice
@@ -48,6 +50,9 @@ pub enum ActionWithServer {
     #[command(name = "poll")]
     Poll,
 
+    #[command(name = "start")]
+    Start,
+
     #[command(name = "exit")]
     Exit,
 }
@@ -59,8 +64,9 @@ impl FromStr for ActionWithServer {
         match s {
             "ping" => Ok(ActionWithServer::Ping),
             "poll" => Ok(ActionWithServer::Poll),
+            "start" => Ok(ActionWithServer::Start),
             "exit" => Ok(ActionWithServer::Exit),
-            _ => Err("Invalid actino".to_string()),
+            _ => Err("Invalid actinon".to_string()),
         }
     }
 }
@@ -73,6 +79,7 @@ impl ActionWithServer {
                 Some(DaemonResponse::Success("Pong".to_string())),
             ),
             Self::Poll => (DaemonCommand::GetState, None),
+            Self::Start => (DaemonCommand::Start, None),
             Self::Exit => (DaemonCommand::Exit, None),
         }
     }
@@ -101,6 +108,7 @@ impl ActionWithServer {
         match self {
             Self::Ping => "ping",
             Self::Poll => "poll",
+            Self::Start => "start",
             Self::Exit => "exit",
         }
     }
@@ -110,6 +118,7 @@ impl ActionWithServer {
 pub enum DaemonCommand {
     Noop,
     GetState,
+    Start,
     Exit,
 }
 
@@ -136,6 +145,16 @@ fn redirect_output() {
 }
 
 fn event_loop() {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<DaemonCommand>();
+
+    _ = std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(tokio_loop(rx))
+    });
+
     let listener = UnixListener::bind(get_ipc_socket_file()).unwrap();
     while let Some(Ok(mut stream)) = listener.incoming().next() {
         let mut len_buf = [0u8; 4];
@@ -163,11 +182,10 @@ fn event_loop() {
         };
 
         let (daemon_command, maybe_daemon_response) = action_with_server.into_daemon_command();
-        match daemon_command {
-            DaemonCommand::Noop => {}
-            DaemonCommand::GetState => {}
-            DaemonCommand::Exit => break,
+        if matches!(daemon_command, DaemonCommand::Exit) {
+            break;
         }
+        tx.send(daemon_command).unwrap();
 
         if let Some(daemon_res) = maybe_daemon_response {
             let msg = match daemon_res {
@@ -178,5 +196,109 @@ fn event_loop() {
             stream.write_all(&(msg.len() as u32).to_be_bytes()).unwrap();
             stream.write_all(msg.as_bytes()).unwrap();
         }
+    }
+}
+
+async fn tokio_loop(mut rx: UnboundedReceiver<DaemonCommand>) {
+    let mut screen_shotter = ScreenShotter::new(30);
+
+    loop {
+        select! {
+            command = rx.recv() => {
+                match command.unwrap() {
+                    DaemonCommand::Start => {
+                        screen_shotter.ticking = true;
+                        screen_shotter.last = Instant::now();
+                    },
+                    // DaemonCommand::Stop => {},
+                    // DaemonCommand::Reset => {},
+                    DaemonCommand::Exit => { break },
+                    _ => {}
+                }
+            },
+            _ = tokio::time::sleep(Duration::from_millis(1000)) => {
+                if !screen_shotter.ticking {
+                    continue
+                }
+
+                screen_shotter.ticks += 1;
+                if screen_shotter.ticks >= screen_shotter.base_ticks {
+                    screen_shotter.ticks = 0;
+                    screen_shotter.make_screenshot().await;
+                }
+            }
+        }
+    }
+}
+
+struct ScreenShotter {
+    base_ticks: u16,
+    ticks: u16,
+    ticking: bool,
+    last: Instant,
+    last_id: Option<u64>,
+}
+
+impl ScreenShotter {
+    fn new(base_ticks: u16) -> Self {
+        ScreenShotter {
+            base_ticks,
+            ticks: base_ticks,
+            ticking: false,
+            last: Instant::now(),
+            last_id: None,
+        }
+    }
+
+    async fn make_screenshot(&mut self) {
+        println!("Elapsed: {:.4}", self.last.elapsed().as_secs_f64());
+        self.last = Instant::now();
+
+        let id = match self.last_id {
+            Some(id) => {
+                let new_id = id + 1;
+                self.last_id = Some(new_id);
+
+                new_id
+            }
+            None => spawn_blocking(move || {
+                let dir_entries = std::fs::read_dir("/home/lf/timetracking").unwrap();
+                let mut ids = dir_entries
+                    .map(|d| {
+                        let d = d.unwrap();
+                        let path = d.path();
+                        let Some(stem) = path.file_stem().map(|s| s.to_string_lossy()) else {
+                            return 0;
+                        };
+                        let Some(id_str) = stem.split("_").last() else {
+                            return 0;
+                        };
+                        let Ok(id) = id_str.parse::<u64>() else {
+                            return 0;
+                        };
+
+                        id
+                    })
+                    .collect::<Vec<u64>>();
+
+                if ids.len() > 0 {
+                    ids.sort();
+                    let id = ids[ids.len() - 1];
+
+                    id + 1
+                } else {
+                    0
+                }
+            })
+            .await
+            .unwrap(),
+        };
+
+        tokio::process::Command::new("grim")
+            .arg("-t")
+            .arg("jpeg")
+            .arg(format!("/home/lf/timetracking/screen_{}.jpeg", id))
+            .spawn()
+            .unwrap();
     }
 }

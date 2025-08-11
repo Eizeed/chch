@@ -6,3 +6,4 @@ edition = "2024"
 [dependencies]
 clap = { version = "4.5.43", features = ["derive"] }
 nix = { version = "0.30.1", features = ["process"] }
+tokio = { version = "1.47.1", features = ["fs", "macros", "process", "rt-multi-thread", "sync", "time"] }
