@@ -1,37 +1,28 @@
-use std::{
-    error::Error as StdError,
-    fmt::Display,
-    os::unix::net::UnixStream,
-};
+use std::{error::Error as StdError, fmt::Display, os::unix::net::UnixStream};
 
+use chch_daemon::{check_server_running, get_ipc_socket_file, start_daemon_server};
 use clap::Parser;
 
-use crate::{
-    opts::Opts,
-    server::{exit, get_ipc_socket_file, ping, start_daemon},
-};
+use crate::opts::Opts;
 
-mod ipc_server;
 mod opts;
-mod server;
 
 fn main() -> Result<(), Error> {
     let opts = Opts::parse();
 
     match opts.action {
-        opts::Action::Deamon => start_daemon(),
-        opts::Action::WithServer(action) => match action {
-            opts::ActionWithServer::Ping => {
-                let mut stream = UnixStream::connect(get_ipc_socket_file()).unwrap();
-                let res = ping(&mut stream).unwrap();
-                println!("{}", res)
+        opts::Action::Deamon => {
+            if check_server_running(&get_ipc_socket_file()) {
+                return Err(Error::new("Daemon already running"));
+            } else {
+                start_daemon_server();
             }
-            opts::ActionWithServer::Poll => {}
-            opts::ActionWithServer::Exit => {
-                let mut stream = UnixStream::connect(get_ipc_socket_file()).unwrap();
-                exit(&mut stream).unwrap();
-            }
-        },
+        }
+        opts::Action::WithServer(action) => {
+            let mut stream = UnixStream::connect(get_ipc_socket_file()).unwrap();
+            let maybe_res = action.handle_action(&mut stream).unwrap();
+            println!("{:?}", maybe_res);
+        }
     };
 
     Ok(())
