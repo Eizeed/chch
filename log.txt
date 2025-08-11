@@ -1,0 +1,24 @@
+
+MESSAGE: ping
+???????????
+MESSAGE: exit
+Exit
+WHY AM I HERE
+
+thread 'main' panicked at src/server.rs:77:17:
+explicit panic
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+MESSAGE: exit
+Exit
+WHY AM I HERE
+
+thread 'main' panicked at src/server.rs:77:17:
+explicit panic
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+MESSAGE: exit
+Exit
+WHY AM I HERE
+
+thread 'main' panicked at src/server.rs:77:17:
+explicit panic
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
