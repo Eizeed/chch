@@ -11,7 +11,7 @@ fn main() -> Result<(), Error> {
     let opts = Opts::parse();
 
     match opts.action {
-        opts::Action::Deamon => {
+        opts::Action::Daemon => {
             if check_server_running(&get_ipc_socket_file()) {
                 return Err(Error::new("Daemon already running"));
             } else {

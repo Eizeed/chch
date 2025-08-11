@@ -9,8 +9,8 @@ pub struct Opts {
 
 #[derive(Subcommand)]
 pub enum Action {
-    #[command(name = "deamon", alias = "d")]
-    Deamon,
+    #[command(name = "daemon", alias = "d")]
+    Daemon,
 
     #[command(flatten)]
     WithServer(ActionWithServer),
