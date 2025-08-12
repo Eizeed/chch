@@ -21,7 +21,8 @@ fn main() -> Result<(), Error> {
         opts::Action::WithServer(action) => {
             let mut stream = UnixStream::connect(get_ipc_socket_file()).unwrap();
             let maybe_res = action.handle_action(&mut stream).unwrap();
-            println!("{maybe_res:?}");
+
+            maybe_res.map(|res| println!("{}", res));
         }
     };
 

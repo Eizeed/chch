@@ -9,7 +9,12 @@ use std::{
     str::FromStr,
     time::Duration,
 };
-use tokio::{select, sync::mpsc::UnboundedReceiver, task::spawn_blocking, time::Instant};
+use tokio::{
+    select,
+    sync::mpsc::{UnboundedReceiver, UnboundedSender},
+    task::spawn_blocking,
+    time::Instant,
+};
 
 pub fn start_daemon_server() {
     // IDK why forking twice
@@ -80,17 +85,14 @@ impl FromStr for ActionWithServer {
 }
 
 impl ActionWithServer {
-    pub fn into_daemon_command(&self) -> (DaemonCommand, Option<DaemonResponse>) {
+    pub fn into_daemon_command(&self) -> DaemonCommand {
         match self {
-            ActionWithServer::Ping => (
-                DaemonCommand::Noop,
-                Some(DaemonResponse::Success("Pong".to_string())),
-            ),
-            ActionWithServer::Poll => (DaemonCommand::GetState, None),
-            ActionWithServer::Start => (DaemonCommand::Start, None),
-            ActionWithServer::Resume => (DaemonCommand::Resume, None),
-            ActionWithServer::Pause => (DaemonCommand::Pause, None),
-            ActionWithServer::Exit => (DaemonCommand::Exit, None),
+            ActionWithServer::Ping => DaemonCommand::Ping,
+            ActionWithServer::Poll => DaemonCommand::GetState,
+            ActionWithServer::Start => DaemonCommand::Start,
+            ActionWithServer::Resume => DaemonCommand::Resume,
+            ActionWithServer::Pause => DaemonCommand::Pause,
+            ActionWithServer::Exit => DaemonCommand::Exit,
         }
     }
 
@@ -129,6 +131,7 @@ impl ActionWithServer {
 #[derive(Debug)]
 pub enum DaemonCommand {
     Noop,
+    Ping,
     GetState,
     Start,
     Resume,
@@ -164,14 +167,15 @@ fn redirect_output() {
 }
 
 fn event_loop() {
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<DaemonCommand>();
+    let (tokio_tx, tokio_rx) = tokio::sync::mpsc::unbounded_channel::<DaemonCommand>();
+    let (main_tx, mut main_rx) = tokio::sync::mpsc::unbounded_channel::<TokioMessage>();
 
     _ = std::thread::spawn(move || {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap()
-            .block_on(tokio_loop(rx))
+            .block_on(tokio_loop(tokio_rx, main_tx))
     });
 
     let listener = UnixListener::bind(get_ipc_socket_file()).unwrap();
@@ -200,43 +204,52 @@ fn event_loop() {
             }
         };
 
-        let (daemon_command, maybe_daemon_response) = action_with_server.into_daemon_command();
+        let daemon_command = action_with_server.into_daemon_command();
         if matches!(daemon_command, DaemonCommand::Exit) {
             break;
         }
-        tx.send(daemon_command).unwrap();
+        tokio_tx.send(daemon_command).unwrap();
 
-        if let Some(daemon_res) = maybe_daemon_response {
-            let msg = match daemon_res {
-                DaemonResponse::Success(msg) => msg,
-                DaemonResponse::Failure(msg) => msg,
-            };
+        let op = main_rx.blocking_recv().expect("Daemon died");
+        let msg = op.to_string();
 
-            stream.write_all(&(msg.len() as u32).to_be_bytes()).unwrap();
-            stream.write_all(msg.as_bytes()).unwrap();
-        }
+        stream.write_all(&(msg.len() as u32).to_be_bytes()).unwrap();
+        stream.write_all(msg.as_bytes()).unwrap();
     }
 }
 
-async fn tokio_loop(mut rx: UnboundedReceiver<DaemonCommand>) {
+async fn tokio_loop(
+    mut rx: UnboundedReceiver<DaemonCommand>,
+    main_tx: UnboundedSender<TokioMessage>,
+) {
     let mut screen_shotter = ScreenShotter::new(1);
+    let mut screenshot_timer = Instant::now();
 
     loop {
         select! {
             command = rx.recv() => {
                 match command.expect("Channel closed") {
+                    DaemonCommand::Ping => main_tx.send(TokioMessage::Ping).unwrap(),
                     DaemonCommand::Start => {
                         screen_shotter.ticking = true;
-                        screen_shotter.last = Instant::now();
+                        screenshot_timer = Instant::now();
+                        main_tx.send(TokioMessage::Noop).unwrap();
                     },
                     DaemonCommand::Resume => {
                         screen_shotter.paused = false;
+                        main_tx.send(TokioMessage::Noop).unwrap();
                     }
                     DaemonCommand::Pause => {
                         screen_shotter.paused = true;
+                        main_tx.send(TokioMessage::Noop).unwrap();
+                    }
+                    DaemonCommand::GetState => {
+                        main_tx.send(TokioMessage::State(screen_shotter.clone())).unwrap();
                     }
                     DaemonCommand::Exit => { break },
-                    _ => {}
+                    _ => {
+                        main_tx.send(TokioMessage::Noop).unwrap();
+                    }
                 }
             },
             _ = tokio::time::sleep(Duration::from_millis(1000)) => {
@@ -248,17 +261,19 @@ async fn tokio_loop(mut rx: UnboundedReceiver<DaemonCommand>) {
                 if screen_shotter.ticks >= screen_shotter.base_ticks {
                     screen_shotter.ticks = 0;
                     screen_shotter.make_screenshot().await;
+                    println!("Elapsed: {:.4}", screenshot_timer.elapsed().as_secs_f64());
+                    screenshot_timer = Instant::now();
                 }
             }
         }
     }
 }
 
+#[derive(Debug, Clone)]
 struct ScreenShotter {
     base_ticks: u16,
     ticks: u16,
     ticking: bool,
-    last: Instant,
     last_id: Option<u64>,
     paused: bool,
 }
@@ -269,16 +284,12 @@ impl ScreenShotter {
             base_ticks,
             ticks: base_ticks,
             ticking: false,
-            last: Instant::now(),
             last_id: None,
             paused: false,
         }
     }
 
     async fn make_screenshot(&mut self) {
-        println!("Elapsed: {:.4}", self.last.elapsed().as_secs_f64());
-        self.last = Instant::now();
-
         let id = match self.last_id {
             Some(id) => {
                 let new_id = id + 1;
@@ -325,5 +336,30 @@ impl ScreenShotter {
             .arg(format!("/home/lf/timetracking/screen_{}.jpeg", id))
             .spawn()
             .unwrap();
+    }
+}
+
+enum TokioMessage {
+    Ping,
+    State(ScreenShotter),
+    Noop,
+}
+
+impl TokioMessage {
+    fn to_string(&self) -> String {
+        match self {
+            TokioMessage::Ping => "ping".to_string(),
+            TokioMessage::State(ss) => {
+                format!(
+                    "base_ticks: {}\nticks: {}\nticking: {}\nlast_id: {}\npaused: {}",
+                    ss.base_ticks,
+                    ss.ticks,
+                    ss.ticking,
+                    ss.last_id.unwrap_or_default(),
+                    ss.paused
+                )
+            }
+            TokioMessage::Noop => "".to_string(),
+        }
     }
 }
