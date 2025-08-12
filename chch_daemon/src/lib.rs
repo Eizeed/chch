@@ -53,6 +53,12 @@ pub enum ActionWithServer {
     #[command(name = "start")]
     Start,
 
+    #[command(name = "resume")]
+    Resume,
+
+    #[command(name = "pause")]
+    Pause,
+
     #[command(name = "exit")]
     Exit,
 }
@@ -65,6 +71,8 @@ impl FromStr for ActionWithServer {
             "ping" => Ok(ActionWithServer::Ping),
             "poll" => Ok(ActionWithServer::Poll),
             "start" => Ok(ActionWithServer::Start),
+            "resume" => Ok(ActionWithServer::Resume),
+            "pause" => Ok(ActionWithServer::Pause),
             "exit" => Ok(ActionWithServer::Exit),
             _ => Err("Invalid actinon".to_string()),
         }
@@ -78,9 +86,11 @@ impl ActionWithServer {
                 DaemonCommand::Noop,
                 Some(DaemonResponse::Success("Pong".to_string())),
             ),
-            Self::Poll => (DaemonCommand::GetState, None),
-            Self::Start => (DaemonCommand::Start, None),
-            Self::Exit => (DaemonCommand::Exit, None),
+            ActionWithServer::Poll => (DaemonCommand::GetState, None),
+            ActionWithServer::Start => (DaemonCommand::Start, None),
+            ActionWithServer::Resume => (DaemonCommand::Resume, None),
+            ActionWithServer::Pause => (DaemonCommand::Pause, None),
+            ActionWithServer::Exit => (DaemonCommand::Exit, None),
         }
     }
 
@@ -109,6 +119,8 @@ impl ActionWithServer {
             Self::Ping => "ping",
             Self::Poll => "poll",
             Self::Start => "start",
+            Self::Resume => "resume",
+            Self::Pause => "pause",
             Self::Exit => "exit",
         }
     }
@@ -119,6 +131,8 @@ pub enum DaemonCommand {
     Noop,
     GetState,
     Start,
+    Resume,
+    Pause,
     Exit,
 }
 
@@ -128,10 +142,15 @@ pub enum DaemonResponse {
 }
 
 fn redirect_output() {
+    // let file = std::fs::OpenOptions::new()
+    //     .create(true)
+    //     .append(true)
+    //     .open("/home/lf/personal/rust/chch/log.txt")
+    //     .unwrap();
+
     let file = std::fs::OpenOptions::new()
-        .create(true)
         .append(true)
-        .open("/home/lf/personal/rust/chch/log.txt")
+        .open("/dev/pts/6")
         .unwrap();
 
     let fd = file.as_fd();
@@ -200,24 +219,28 @@ fn event_loop() {
 }
 
 async fn tokio_loop(mut rx: UnboundedReceiver<DaemonCommand>) {
-    let mut screen_shotter = ScreenShotter::new(30);
+    let mut screen_shotter = ScreenShotter::new(1);
 
     loop {
         select! {
             command = rx.recv() => {
-                match command.unwrap() {
+                match command.expect("Channel closed") {
                     DaemonCommand::Start => {
                         screen_shotter.ticking = true;
                         screen_shotter.last = Instant::now();
                     },
-                    // DaemonCommand::Stop => {},
-                    // DaemonCommand::Reset => {},
+                    DaemonCommand::Resume => {
+                        screen_shotter.paused = false;
+                    }
+                    DaemonCommand::Pause => {
+                        screen_shotter.paused = true;
+                    }
                     DaemonCommand::Exit => { break },
                     _ => {}
                 }
             },
             _ = tokio::time::sleep(Duration::from_millis(1000)) => {
-                if !screen_shotter.ticking {
+                if !screen_shotter.ticking || screen_shotter.paused {
                     continue
                 }
 
@@ -237,6 +260,7 @@ struct ScreenShotter {
     ticking: bool,
     last: Instant,
     last_id: Option<u64>,
+    paused: bool,
 }
 
 impl ScreenShotter {
@@ -247,6 +271,7 @@ impl ScreenShotter {
             ticking: false,
             last: Instant::now(),
             last_id: None,
+            paused: false,
         }
     }
 
