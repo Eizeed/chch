@@ -145,16 +145,16 @@ pub enum DaemonResponse {
 }
 
 fn redirect_output() {
-    // let file = std::fs::OpenOptions::new()
-    //     .create(true)
-    //     .append(true)
-    //     .open("/home/lf/personal/rust/chch/log.txt")
-    //     .unwrap();
-
     let file = std::fs::OpenOptions::new()
+        .create(true)
         .append(true)
-        .open("/dev/pts/6")
+        .open("/home/lf/personal/rust/chch/log.txt")
         .unwrap();
+
+    // let file = std::fs::OpenOptions::new()
+    //     .append(true)
+    //     .open("/dev/pts/3")
+    //     .unwrap();
 
     let fd = file.as_fd();
 
@@ -348,10 +348,10 @@ enum TokioMessage {
 impl TokioMessage {
     fn to_string(&self) -> String {
         match self {
-            TokioMessage::Ping => "ping".to_string(),
+            TokioMessage::Ping => "pong".to_string(),
             TokioMessage::State(ss) => {
                 format!(
-                    "base_ticks: {}\nticks: {}\nticking: {}\nlast_id: {}\npaused: {}",
+                    "{{\"base_ticks\": {},\"ticks\": {},\"ticking\": {},\"last_id\": {},\"paused\": {}}}",
                     ss.base_ticks,
                     ss.ticks,
                     ss.ticking,
